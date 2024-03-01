@@ -1,0 +1,56 @@
+version: "3.8"
+
+services:
+  client:
+    build:
+      context: ./client
+      dockerfile: Dockerfile
+      args:
+        - REACT_APP_API_URL=${REACT_APP_API_URL}
+        - REACT_APP_TRANSCRIPT_URL=${REACT_APP_TRANSCRIPT_URL}
+    image: farpointoi_client:latest
+    volumes:
+      - /etc/letsencrypt:/etc/letsencrypt
+    ports:
+      - "9090:9090"
+    depends_on:
+      - server
+      - transcription
+
+  server:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    image: farpointoi_server:latest
+    volumes:
+      - ./server/rag/data:/usr/src/app/server/rag/data
+    ports:
+      - "8080:8080"
+    environment:
+      - FLASK_APP=${FLASK_APP}
+      - FLASK_ENV=${FLASK_ENV}
+      - FLASK_RUN_PORT=${FLASK_RUN_PORT}
+      - FLASK_DEBUG=${FLASK_DEBUG}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+      - GOOGLE_SECRET_KEY=${GOOGLE_SECRET_KEY}
+      - AUTH_SECRET_KEY=${AUTH_SECRET_KEY}
+      - POSTGRES_HOST=${POSTGRES_HOST}
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_PORT=${POSTGRES_PORT}
+      - POSTGRES_VECTOR_TABLE=${POSTGRES_VECTOR_TABLE}
+      - CHROMA_HOST=${CHROMA_HOST}
+      - CHROMA_PORT=${CHROMA_PORT}
+      - CHROMA_COLLECTION_NAME=${CHROMA_COLLECTION_NAME}
+
+  transcription:
+    build:
+      context: ./transcription
+      dockerfile: Dockerfile
+    image: farpointoi_transcription:latest
+    ports:
+      - "5555:5555"
+    environment:
+      - DEEPGRAM_API_KEY=${DEEPGRAM_API_KEY}

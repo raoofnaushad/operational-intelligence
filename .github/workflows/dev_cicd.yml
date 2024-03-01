@@ -1,0 +1,126 @@
+name: Development CICD
+
+on:
+  push:
+    branches: [dev]
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v2
+
+      # Set up Docker Buildx (optional, can be useful for advanced build capabilities)
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v1
+
+      # Log in to Amazon ECR
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v1
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+
+      # Create SSL cert and key files for server
+      - name: Create SSL files for server
+        run: |
+          echo "${{ secrets.DEVELOPMENT_SSL_CERT }}" > ./server/cert.pem
+          echo "${{ secrets.DEVELOPMENT_SSL_KEY }}" > ./server/key.pem
+
+      # Create SSL cert and key files for transcription
+      - name: Create SSL files for transcription
+        run: |
+          echo "${{ secrets.DEVELOPMENT_SSL_CERT }}" > ./transcription/cert.pem
+          echo "${{ secrets.DEVELOPMENT_SSL_KEY }}" > ./transcription/key.pem
+
+      # Build Docker images using docker-compose
+      - name: Build Docker images
+        run: docker-compose build
+        env:
+          REACT_APP_API_URL: ${{ secrets.DEVELOPMENT_REACT_APP_API_URL }}
+          REACT_APP_TRANSCRIPT_URL: ${{ secrets.DEVELOPMENT_REACT_APP_TRANSCRIPT_URL }}
+          FLASK_APP: ${{ secrets.FLASK_APP }}
+          FLASK_ENV: ${{ secrets.FLASK_ENV }}
+          FLASK_RUN_PORT: ${{ secrets.FLASK_RUN_PORT }}
+          FLASK_DEBUG: ${{ secrets.FLASK_DEBUG }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_SECRET_KEY: ${{ secrets.GOOGLE_SECRET_KEY }}
+          AUTH_SECRET_KEY: ${{ secrets.AUTH_SECRET_KEY }}
+          POSTGRES_HOST: ${{ secrets.DEVELOPMENT_POSTGRES_HOST }}
+          POSTGRES_DB: ${{ secrets.POSTGRES_DB }}
+          POSTGRES_USER: ${{ secrets.POSTGRES_USER }}
+          POSTGRES_PORT: ${{ secrets.POSTGRES_PORT }}
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          POSTGRES_VECTOR_TABLE: ${{ secrets.POSTGRES_VECTOR_TABLE }}
+          DEEPGRAM_API_KEY: ${{ secrets.DEEPGRAM_API_KEY }}
+
+      # Tag and push Docker images to AWS ECR
+      - name: Tag and push client
+        run: |
+          docker tag farpointoi_client:latest ${{ secrets.AWS_ECR_REGISTRY }}/farpointoi_client:latest
+          docker push ${{ secrets.AWS_ECR_REGISTRY }}/farpointoi_client:latest
+      - name: Tag and push server
+        run: |
+          docker tag farpointoi_server:latest ${{ secrets.AWS_ECR_REGISTRY }}/farpointoi_server:latest
+          docker push ${{ secrets.AWS_ECR_REGISTRY }}/farpointoi_server:latest
+      - name: Tag and push transcription
+        run: |
+          docker tag farpointoi_transcription:latest ${{ secrets.AWS_ECR_REGISTRY }}/farpointoi_transcription:latest
+          docker push ${{ secrets.AWS_ECR_REGISTRY }}/farpointoi_transcription:latest
+
+  deploy-to-server:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      # Setup SSH
+      - name: Setup SSH
+        uses: webfactory/ssh-agent@v0.5.3
+        with:
+          ssh-private-key: ${{ secrets.DEVELOPMENT_SSH_PRIVATE_KEY }}
+
+      - name: Create Docker Network
+        run: docker network create farpointoi_network || true
+
+      - name: Deploy to server
+        run: |
+          ssh -o StrictHostKeyChecking=no ${{ secrets.DEVELOPMENT_SERVER_NAME }}@${{ secrets.DEVELOPMENT_SERVER_IP }} "\
+          cd /home/ubuntu/farpointoi/farpointoi && \
+          git checkout dev && \
+          git pull origin dev && \
+          echo 'REACT_APP_API_URL=${{ secrets.DEVELOPMENT_REACT_APP_API_URL }}' > .env && \
+          echo 'REACT_APP_TRANSCRIPT_URL=${{ secrets.DEVELOPMENT_REACT_APP_TRANSCRIPT_URL }}' >> .env && \
+          echo 'FLASK_APP=${{ secrets.FLASK_APP }}' >> .env && \
+          echo 'FLASK_ENV=${{ secrets.FLASK_ENV }}' >> .env && \
+          echo 'FLASK_RUN_PORT=${{ secrets.FLASK_RUN_PORT }}' >> .env && \
+          echo 'FLASK_DEBUG=${{ secrets.FLASK_DEBUG }}' >> .env && \
+          echo 'OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}' >> .env && \
+          echo 'GOOGLE_CLIENT_ID=${{ secrets.GOOGLE_CLIENT_ID }}' >> .env && \
+          echo 'GOOGLE_SECRET_KEY=${{ secrets.GOOGLE_SECRET_KEY }}' >> .env && \
+          echo 'AUTH_SECRET_KEY=${{ secrets.AUTH_SECRET_KEY }}' >> .env && \
+          echo 'POSTGRES_HOST=${{ secrets.DEVELOPMENT_POSTGRES_HOST }}' >> .env && \
+          echo 'POSTGRES_DB=${{ secrets.POSTGRES_DB }}' >> .env && \
+          echo 'POSTGRES_USER=${{ secrets.POSTGRES_USER }}' >> .env && \
+          echo 'POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}' >> .env && \
+          echo 'POSTGRES_PORT=${{ secrets.POSTGRES_PORT }}' >> .env && \
+          echo 'POSTGRES_VECTOR_TABLE=${{ secrets.POSTGRES_VECTOR_TABLE }}' >> .env && \
+          echo 'DEEPGRAM_API_KEY=${{ secrets.DEEPGRAM_API_KEY }}' >> .env && \
+          aws ecr get-login-password --region ${{ secrets.AWS_REGION }} | docker login --username AWS --password-stdin ${{ secrets.AWS_ECR_REGISTRY }} && \
+          docker pull ${{ secrets.AWS_ECR_REGISTRY }}/farpointoi_client:latest && \
+          docker pull ${{ secrets.AWS_ECR_REGISTRY }}/farpointoi_server:latest && \
+          docker pull ${{ secrets.AWS_ECR_REGISTRY }}/farpointoi_transcription:latest && \
+          docker tag ${{ secrets.AWS_ECR_REGISTRY }}/farpointoi_client:latest farpointoi_client:latest && \
+          docker tag ${{ secrets.AWS_ECR_REGISTRY }}/farpointoi_server:latest farpointoi_server:latest && \
+          docker tag ${{ secrets.AWS_ECR_REGISTRY }}/farpointoi_transcription:latest farpointoi_transcription:latest && \
+          docker-compose stop && \
+          docker-compose rm -f client server transcription && \
+          docker-compose up -d && \
+          docker image prune -a -f && \
+          sudo cp dev_nginx.conf /etc/nginx/nginx.conf && \
+          sudo systemctl reload nginx"
